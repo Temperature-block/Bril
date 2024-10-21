@@ -2,10 +2,17 @@ import pprint
 import json
 import sys
 import copy
-from dict_insnref import instr_ref
+from dict_insnref import instr_ref,sml_correspondence
+from to_sml import to_sml
+from collections import ChainMap
+import string
+import random
+
 pp = pprint.PrettyPrinter(indent=4)
 
-
+def generate_random_name(length=10):
+    # Generate a random string of letters
+    return ''.join(random.choices(string.ascii_letters, k=length))
 
 
 def is_equal_ignore_order(list1, list2):
@@ -69,6 +76,7 @@ class create_cfg:
         instructions = function["instrs"]
         basic_block = []
         for insn_pos,instruction in enumerate(instructions):
+            #print(instruction)
             if("label" in instruction.keys()):
                 if(basic_block != []):
                     basic_blocks.append(basic_block)
@@ -83,6 +91,20 @@ class create_cfg:
                 basic_block.append(instruction)
         if(basic_block != []):
             basic_blocks.append(basic_block)
+
+        for blk in basic_blocks:
+            print("dblk",blk)
+            if("label" not in blk[0]):
+               name = generate_random_name()
+               print(blk)
+               blk.insert(0,{"label":name})
+        name = generate_random_name()
+        ins_tr = instr_ref["jmp"]
+        print("creating entry",name,basic_blocks[0][0])
+        ins_tr["labels"] = [basic_blocks[0][0]["label"]]
+        basic_blocks.insert(0,[{"label":name},ins_tr])
+        #print("bbs",basic_blocks)
+        print("creating entry",name,basic_blocks[0])
         cfg = self.populate_cfg_edges(basic_blocks)
         return cfg
 
@@ -94,27 +116,43 @@ class create_cfg:
             if("label" in block[0]):
                 label_to_blocknum.update({block[0]["label"]:block_num})
         for block_num,block in enumerate(basic_blocks):
+            print("----------",block,"\nBBS\n",basic_blocks,"\n>>>>>>>>>>>>>>>>>>>")
             if("op" in block[-1] and block[-1]["op"] in ["jmp","br"]):
                 vals = [label_to_blocknum[key] for key in block[-1]["labels"]]
                 cfg.append([block,vals])
+                print("taken 1",basic_blocks)
             elif("op" in block[-1] and block[-1]["op"] == "ret"):
                 cfg.append([block,[-1]])
+                print("taken 2",basic_blocks)
             else:
                 if(block_num == num_of_basic_blocks-1):
                    cfg.append([block,[-1]])
                 else:
+                   print("APPPPPPPPPPPPPPPPPPPPPPENDING JMPPPPPPPPPPPPPPPPPPPPPPPPPPPPP")
+                   ins_tr = copy.deepcopy(instr_ref["jmp"])
+                   if ("label" in basic_blocks[block_num+1][0]):
+                      #print("---------",block)
+                      ins_tr["labels"] = [basic_blocks[block_num+1][0]["label"]]
+                      block.append(ins_tr)
+                      print(basic_blocks)
                    cfg.append([block,[block_num+1]])
+            print("EXIT ----------",basic_blocks)
+        print("CFG",cfg)
         return cfg
 
 
 class optimize_ir:
     def __init__(self, bril_func):
-        self.bril_func = bril_func
+        self.bril_func = copy.deepcopy(bril_func)
+        self.copy_func = copy.deepcopy(bril_func)
+        self.func_args = [name["name"] for name in bril_func["args"]] if "args" in bril_func else []
         self.cfg = self.bril_func["cfg"]
         self.blocks = [block[0] for block in self.cfg]
-        self.apply_local_optimizations(self.blocks)
+        #self.apply_local_optimizations(self.blocks)
+        print("test",self.cfg)
         self.dfa_impl_std_analysis(self.cfg)
         self.populate_with_dominance_info(self.regular_analysis)
+        self.to_ssa(self.dom_info)
 
     def apply_local_optimizations(self, blocks):
         blocks = self.blocks
@@ -347,7 +385,31 @@ class optimize_ir:
             print()
         print("--------------------------------------")
 
+    def print_instrs(self,analysis):
+        for key, sub_dict in analysis.items():
+            print(sub_dict[0])
+
+    def print_orig(self,data,tosml,tree):
+        result = []
+        if(tosml):
+           to_sml(self.copy_func,data,tree)
+        for key, value in data.items():
+            list_of_dicts = value[0]
+            for sub_dict in list_of_dicts:
+                if 'position' in sub_dict:
+                    del sub_dict['position']
+                result.append(sub_dict)
+        bfunc = copy.deepcopy(self.copy_func)
+        bfunc["instrs"] = result
+        del bfunc["cfg"]
+        x = {}
+        x["functions"] = [bfunc]
+        if(not tosml):
+           print(str(json.dumps(x)))
+
     def dfa_impl_std_analysis(self,blocks):
+        print("ye dfa")
+        print(blocks)
         copy_cfg = copy.deepcopy(blocks)
         universal_expr_set = []
         #preprocess with meta data
@@ -373,7 +435,7 @@ class optimize_ir:
         dict_ = {}
         for bl_num,i in enumerate(copy_cfg):
              dict_.update(i)
-
+        print("stuck")
         #reaching_definitions
         def reaching_transfer(instr,currentmeta):
             currentmeta1 = currentmeta.copy()
@@ -386,8 +448,8 @@ class optimize_ir:
 
         analysis = self.dfa_do_work_list(True,dict_,[],[],do_union,reaching_transfer,"reachingdefs",[],[])
         #self.print_analysis(analysis,"reachingdefs")
-        self.univ_expr_set = universal_expr_set
-
+        #self.univ_expr_set = universal_expr_set
+        #print(":(")
         #liveness analysis
         def liveness_transfer(instr, currentmeta):
             currentmeta1 = currentmeta.copy()
@@ -399,7 +461,7 @@ class optimize_ir:
 
         analysis = self.dfa_do_work_list(False,analysis,[],[],do_union,liveness_transfer,"liveness",[],[])
         #self.print_analysis(analysis,"liveness")
-
+        #print("junknk")
         #available exrs
         def available_transfer(instr, currentmeta):
             currentmeta1 = currentmeta.copy()
@@ -416,7 +478,7 @@ class optimize_ir:
 
         analysis = self.dfa_do_work_list(True,analysis,[],universal_expr_set,do_intersection,available_transfer,"availableexpr",[],[])
         #self.print_analysis(analysis,"availableexpr")
-
+        print("ae")
         #very busy expression
         def verybusy_transfer(instr, currentmeta):
             cu = currentmeta.copy()
@@ -428,9 +490,10 @@ class optimize_ir:
             cu.append(new_tuple)
             return cu
 
-        analysis = self.dfa_do_work_list(False,analysis,universal_expr_set,[],do_intersection,verybusy_transfer,"vbusyexpr",[],[])
+        #analysis = self.dfa_do_work_list(False,analysis,universal_expr_set,[],do_intersection,verybusy_transfer,"vbusyexpr",[],[])
         #self.print_analysis(analysis,"vbusyexpr")
         self.regular_analysis = analysis
+        print("end")
 
     def dfa_do_work_list(self,isForward,cfg,ininit,outinit,merge,transfer,tag,dummyinini,dummyoutini):
         #we take a granular approach and do it insn by insn
@@ -516,6 +579,7 @@ class optimize_ir:
         return copy_cfg
 
     def populate_with_dominance_info(self,prev_analysis):
+        #self.print_instrs(prev_analysis)
         #unfortunately our dfa is geared towards running per instruction basis
         #we need to fix this in some future iteration
         node_list = list(prev_analysis.keys())
@@ -526,8 +590,8 @@ class optimize_ir:
             return do_union([clone_meta,[block_pos]])
         dominators = self.dfa_do_work_list(True,prev_analysis,[],node_list,do_intersection,dom_transfer,"dominators",[],[])
         post_dom = self.dfa_do_work_list(False,dominators,node_list,[],do_intersection,dom_transfer,"post_dominators",[],[])
-        self.print_analysis(post_dom,"dominators")
-        self.print_analysis(post_dom,"post_dominators")
+        #self.print_analysis(post_dom,"dominators")
+        #self.print_analysis(post_dom,"post_dominators")
         def create_strict(pdom):
             for key, sub_dict in pdom.items():
                 sub_dict[1]["meta"]["sdom"] = [dominator for dominator in sub_dict[1]["meta"]["dominators"][-1]["out"] if dominator != key]
@@ -587,7 +651,7 @@ class optimize_ir:
         find_frontiers(post_dom)
         self.backedges = []
         find_backedges(0,[],self.backedges)
-        print("backedges : ",self.backedges)
+        #print("backedges : ",self.backedges)
         create_dom_tree()
         print("--------------------------------")
         for key, sub_dict in post_dom.items():
@@ -595,6 +659,129 @@ class optimize_ir:
         print("--------------------------------")
         print("tree ",self.tree)
         self.dom_info = post_dom
+
+    def to_ssa(self,cfg_meta):
+        print("meta---------",cfg_meta)
+        dom_tree = dict(ChainMap(*self.tree))
+        print(dom_tree)
+        def build_map(cfg):
+            var_assigns_to_map = {}
+            for key, sub_dict in cfg.items():
+                instrs = sub_dict[0]
+                for instr in instrs:
+                    #print(instr)
+                    if "dest" in instr:
+                        dest = instr["dest"]
+                        if dest in var_assigns_to_map and key not in var_assigns_to_map[dest]:
+                           var_assigns_to_map[dest].append(key)
+                        elif dest not in var_assigns_to_map:
+                           var_assigns_to_map[dest] = [key]
+            return var_assigns_to_map
+
+        def insert_phy(cfg,variable_mapping):
+            print("mappp",variable_mapping)
+            for key, sub_dict in variable_mapping.items():
+                itr = 0
+                while itr<len(sub_dict):
+                    df = cfg[sub_dict[itr]][1]["meta"]["df"]
+                    print(df,key,sub_dict,itr)
+                    for i in df:
+                       phi = copy.deepcopy(instr_ref["phi"])
+                       phi["args"] = []
+                       phi["labels"] = []
+                       phi["dest"] = key
+                       inss = cfg[i][0]
+                       phis = [ins for ins in inss if "op" in ins and ins["op"] == "phi"]
+                       insert = True
+                       for ph in phis:
+                           if ph["dest"] == key:
+                                insert = False
+                                break
+                       if insert:
+                          sub_dict.append(i)
+                          cfg[i][0].insert(1,phi)
+                    itr+=1
+
+        def perform_ssa_transform(block,blk_num,curr_var_mapping,newssablock,updated):
+            curr_jmp_to = dom_tree[blk_num]
+            newinsns = []
+            instrs = block[0]
+            cblock_names = []
+            lbl = instrs[0]["label"]
+            succs = block[1]["meta"]["suc"]
+            for instr in instrs:
+                nargs = []
+                if "args" in instr and instr["op"] != "phi":
+                   for arg in instr["args"]:
+                       if curr_var_mapping[arg] == []: continue
+                       nargs.append(curr_var_mapping[arg][-1])
+                   if nargs!= []:
+                      instr["args"] = nargs
+
+                if "dest" in instr:
+                       gen = updated[instr["dest"]]
+                       oname = instr["dest"]
+                       print(instr["dest"],gen)
+                       nname = instr["dest"] + "." + str(gen+1)
+                       if nname not in curr_var_mapping[instr["dest"]]:
+                          curr_var_mapping[instr["dest"]].append(nname)
+                       updated[instr["dest"]] = gen+1
+                       cblock_names.append(nname)
+                       instr["dest"] = nname
+
+                newinsns.append(instr)
+
+            for suc in succs:
+                sinstrs = cfg_meta[suc][0]
+                for i in sinstrs:
+                    if "op" in i and i["op"] ==  "phi":
+                       if i["dest"] not in curr_var_mapping:
+                          i["args"].append(curr_var_mapping[i["dest"][:-2]][-1])
+                       elif(curr_var_mapping[i["dest"]] == []):
+                          i["args"].append("__undefined")
+                       else:
+                          i["args"].append(curr_var_mapping[i["dest"]][-1])
+                       i["labels"].append(lbl)
+
+            newssablock[blk_num] = [newinsns,block[1]]
+
+            for jmp in curr_jmp_to:
+                perform_ssa_transform(cfg_meta[jmp],jmp,curr_var_mapping,newssablock,updated)
+
+            for var,ssa_names in curr_var_mapping.items():
+                for name in ssa_names:
+                    if name in cblock_names:
+                       curr_var_mapping[var].remove(name)
+
+        var_map = build_map(cfg_meta)
+        insert_phy(cfg_meta,var_map)
+        for key,var in var_map.items():
+            var_map[key] = []
+        for arg in self.func_args:
+            var_map[arg] = []
+        nblock = {}
+        blk = copy.deepcopy(var_map)
+        print(blk)
+        for keys,sub_dict in blk.items():
+            blk[keys] = -1
+        print(blk)
+
+        perform_ssa_transform(cfg_meta[0],0,var_map,nblock,blk)
+
+        def reaching_(instr,currentmeta):
+            currentmeta1 = currentmeta.copy()
+            if "dest" not in instr:
+               return currentmeta1
+            currentmeta1.append(instr["dest"])
+            return currentmeta1
+
+        analysis = self.dfa_do_work_list(True,nblock,[],[],do_union,reaching_,"ssa_reachingdefs",[],[])
+        self.print_analysis(analysis,"ssa_reachingdefs")
+        print("SML OP")
+        self.print_orig(analysis,True,dom_tree)
+        print("SSA OP")
+        self.print_orig(analysis,False,dom_tree)
+        print("OUT END")
 
 if __name__ == "__main__":
     path = sys.argv[1]
@@ -609,5 +796,5 @@ if __name__ == "__main__":
         cfg_artifacts.append(cfg)
         function.update({'cfg':cfg.cfg})
         optim_obj = optimize_ir(function)
-        instrs = [ elem for elems in optim_obj.lvn_blocks for elem in elems ] #little trick to flatten list
-        copy_func["instrs"] = instrs
+        #instrs = [ elem for elems in optim_obj.lvn_blocks for elem in elems ] #little trick to flatten list
+        #copy_func["instrs"] = instrs
